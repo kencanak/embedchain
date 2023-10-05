@@ -1,5 +1,6 @@
 import os
 from typing import Dict, List, Optional, Set
+import math
 
 try:
     import pinecone
@@ -89,6 +90,21 @@ class PineconeDb(BaseVectorDB):
             ids.add(result["id"])
         return {"ids": ids}
 
+    def _batch(self, data: List[object], batch_size: int = 24):
+        total_batch = int(math.ceil(float(len(data)) / batch_size))
+
+        batches = []
+
+        for i in range(0, total_batch):
+            start_pointer = i * batch_size
+            end_pointer = batch_size * (i + 1)
+
+            batched_data = data[start_pointer:end_pointer]
+
+            batches.append(batched_data)
+
+        return batches
+
     def add(self, documents: List[str], metadatas: List[object], ids: List[str]):
         """add data in vector database
 
@@ -102,16 +118,24 @@ class PineconeDb(BaseVectorDB):
 
         docs = []
         embeddings = self.embedder.embedding_fn(documents)
+
         for id, text, metadata, embedding in zip(ids, documents, metadatas, embeddings):
-            metadata["text"] = text
+            temp = metadata.copy()
+            temp["text"] = text
             docs.append(
                 {
                     "id": id,
                     "values": embedding,
-                    "metadata": metadata,
+                    "metadata": temp,
                 }
             )
-        self.client.upsert(docs)
+
+        # Max size for an upsert request is 2MB. Recommended upsert limit is 100 vectors per request.
+        # https://docs.pinecone.io/docs/limits#:~:text=Max%20size%20for%20an%20upsert,to%20queries%20immediately%20after%20upserting.
+        batches = self._batch(docs)
+
+        for batch in batches:
+            self.client.upsert(batch)
 
     def query(self, input_query: List[str], n_results: int, where: Dict[str, any]) -> List[str]:
         """
